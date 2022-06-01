@@ -1,28 +1,46 @@
 """
-Script to optimize fixed irrigation strategy over set of historic weather years
+Script to re-optimize irrigation every growth stage based on historical data
+
+Including for different irrigation caps
+
+This script will only run for one combination of 
+(year, irrigation cap, forecast, etc.). Running multiple  combinations
+as done in the article can be achieved using argparse and reading in an input 
+file with all combinations:
+
+parser = argparse.ArgumentParser()
+parser.add_argument("rep", nargs='?', default="1")
+args = parser.parse_args()
+rep = int(args.rep)
+
+adapt_inputs = pd.read_csv('./inputs.csv')
+row = adapt_inputs.iloc[rep-1]
+MAXIRR = row.cap
+CYEAR = row.year
+...
+
 """
 
-# imports
-import copy
-import time
+import numpy as np
+import pandas as pd
 from functools import partial
 from scipy.optimize import differential_evolution
 from aquacrop.core import *
 from aquacrop.classes import *
-import numpy as np
-import pandas as pd
+import copy
+import time
+
 
 #random seed
 time.sleep(1)
 np.random.seed(int(time.time()))
 
-
-
+# allocate params
 COST = 1.  # irrigation cost
 MAXIRR = 10000  # max seasonal irrigtion cap
-CYEAR = 2000  # year for optimization (only used for CO2 conc)
+CYEAR = 1989  # year for optimization
 FORECAST = 0  # using forecasts
-
+    
 
 # functions to save and load model params and current condition
 def save_model(model):
@@ -56,7 +74,8 @@ def load_model(model,params):
     return model
 
 
-# functions to create AquaCrop model
+
+# functions to create and run model
 def create_maize_model(smts,year1,year2,wdf,
               crop = CropClass('Maize','05/01'),
               soil= SoilClass('ClayLoam'),
@@ -68,17 +87,12 @@ def create_maize_model(smts,year1,year2,wdf,
                           crop,IrrMngt=irr_mngt,InitWC=init_wc,CO2conc=co2conc)
     
     model.initialize()
-    #model.step()
+    # model.step()
     
     return model
 
-# run model till end of growing season
+# function to run model till end of growth stage
 def run_model_till_end(model,stop_at_gs=False):
-    """
-    run simulation,
-    if soil-water content drops below SMT threshold, irrigation os triggered
-    """
-
     gs_init = int(model.InitCond.GrowthStage)*1
         
     while (not model.ClockStruct.ModelTermination):
@@ -112,7 +126,8 @@ def run_model_till_end(model,stop_at_gs=False):
     return model
 
 
-#func to calculate profit
+
+#fuunc to calculate profit
 def calc_profit(model):
     
     out = model.Outputs.Final
@@ -143,6 +158,8 @@ def optimize_sim(func):
 
     return res.fun,res.x
 
+
+
 # func to minimize/maximise
 def run_and_return_profit(smts,params,weather_list):
     """
@@ -168,7 +185,46 @@ def run_and_return_profit(smts,params,weather_list):
         return -prof
 
 
+# run test year till end of season
+def run_test(smts,year1,year2,params):
+    model=create_maize_model(smts.reshape(-1),year1,year2,wdf,max_irr_season=MAXIRR)
+    model = load_model(model,params)
+    model = run_model_till_end(model)
+    print(model.InitCond.IrrCum)
+    out = model.Outputs.Final
+    yld = float(out['Yield (tonne/ha)'].mean())
+    tirr = float(out['Seasonal irrigation (mm)'].mean())
+
+    return calc_profit(model),yld,tirr
+
+
+# advance test simulation 7 days then re-optimize smts
+def run_till_gs_and_reopt(model,cy):
+
+    # run till next growth satge
+    model = run_model_till_end(model,True)
+
+    # save model
+    params = save_model(model)
+
+    # optimize smts
+    rew_func = partial(run_and_return_profit,
+                       params=params,weather_list=weather_list)
+
+    profit,smts = optimize_sim(rew_func)
+    
+    model.IrrMngt.SMT=smts.flatten()
+
+    return model,smts
+
+
+
+
+
+
 ###### main code #######
+
+
 
 
 
@@ -177,7 +233,6 @@ wdf = prepare_weather(get_filepath('champion_climate.txt'))
 wdf.Date.min(),wdf.Date.max()
 sim_start='05/01'
 sim_end = '12/31'
-
 weather_list = []
 for year in range(1982,2019):
     new_start = pd.to_datetime('{0}/'.format(year)+sim_start)
@@ -191,43 +246,86 @@ for year in range(1982,2019):
     weather_df = weather_df[weather_df.Date<=new_end]
     
     weather_list.append(weather_df.values)
-    
 
 
 
-
-
-
-
-
-results_arr = []
-for rep in range(1):  # if doing multiple repeats
+# main code
+results_arr=[]
+for rep in range(1):
     year_res=[]
     year_res.append(rep)
     year_res.append(MAXIRR)
     year_res.append(COST)
     year_res.append(FORECAST)
     year_res.append(CYEAR)
-    
-    # create and save initial model params
-    smt = np.array([0.475951, 0.6119769, 0.361503,0])
+
+    # start with optimal fixed strategy depending on maximum irriagtion cap
+
+    if MAXIRR == 10_000:
+        smt = np.array([0.50467352, 0.61434077, 0.3622174,  0.0])
+    elif MAXIRR == 75:
+        smt = np.array([0.11808814, 0.16865024, 0.3310347,  0.0])
+    elif MAXIRR == 100:
+        smt = np.array([0.13505919, 0.07850071, 0.8145998,  0.0])
+    elif MAXIRR == 125:
+        smt = np.array([0.05127158, 0.03720932, 0.80038886, 0.0])
+    elif MAXIRR == 150:
+        smt = np.array([0.03125578, 0.2730232,  0.70472257, 0.0])
+    elif MAXIRR == 175:
+        smt = np.array([0.01883106, 0.33505548, 0.78613462, 0.0])
+    elif MAXIRR == 200:
+        smt = np.array([0.40570058, 0.18266749, 0.79365051, 0.0])
+    elif MAXIRR == 250:
+        smt = np.array([0.49465802, 0.44268202, 0.34538826, 0.0])
+    elif MAXIRR == 300:
+        smt = np.array([0.49573032, 0.40311588, 0.37505826, 0.0])
+    elif MAXIRR == 350:
+        smt = np.array([0.46857963, 0.44267616, 0.37422431, 0.0])
+    elif MAXIRR == 400:
+        smt = np.array([0.50554841, 0.48620426, 0.39177135, 0.0])
+    elif MAXIRR == 450:
+        smt = np.array([0.50466926, 0.61632605, 0.36221305, 0.0])
+    elif MAXIRR == 500:
+        smt = np.array([0.50411676, 0.61622206, 0.36222928, 0.0])
+    elif MAXIRR == 550:
+        smt = np.array([0.50411802, 0.61422673, 0.36221792, 0.0])
+
+
+    year_res.append(smt)
+
+    #create and save test model
     model=create_maize_model(smt,CYEAR,CYEAR,wdf)
     params = save_model(model)
 
-    # define reward function
-    rew_func = partial(run_and_return_profit,params=params,weather_list=weather_list)
+    # evaluate fixed strategy on test year
+    test1_res,yld,tirr = run_test(smt,CYEAR,CYEAR,params)
+    print('test1_{0}'.format(CYEAR),test1_res,smt)
+    year_res.append(test1_res)
+    year_res.append(yld)
+    year_res.append(tirr)
+    print(model.InitCond.GrowthStage,model.InitCond.DAP,model.InitCond.IrrCum)
 
-    # optimize smt strategy
-    _p,smt = optimize_sim(rew_func)
-    
-    # save strategy
-    year_res.append(smt)
 
-    # save profits
-    year_res.append(_p)
+    for d in range(1,3):
+        # run the test year till next growth stage, re-optimize strategy
 
-    # store outputs
+        model,smt=run_till_gs_and_reopt(model,CYEAR)
+        print(model.InitCond.GrowthStage,model.InitCond.DAP,model.InitCond.IrrCum)
+
+        year_res.append(model.InitCond.DAP)
+        year_res.append(model.InitCond.GrowthStage)
+        year_res.append(smt)
+
+        params = save_model(model)
+        test2_res,yld,tirr = run_test(smt,CYEAR,CYEAR,params)
+        print('test2_{0}'.format(CYEAR),test2_res,smt)
+        year_res.append(test2_res)
+        year_res.append(yld)
+        year_res.append(tirr)
+
+
+                
     results_arr.append(year_res)
-    
+    break
 
-pd.DataFrame(results_arr).to_csv('outputs/fixed_results.csv', mode='a', header=False)
+pd.DataFrame(results_arr).to_csv('outputs/gs_adaptation_results.csv', mode='a', header=False)

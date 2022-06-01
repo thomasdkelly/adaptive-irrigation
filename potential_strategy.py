@@ -1,34 +1,26 @@
+"""
+Script to optimize potential irrigation strategy for each year
+over a set of historic weather years
+"""
+
+# imports
 import numpy as np
 import pandas as pd
 from functools import partial
-
 from scipy.optimize import differential_evolution
-
 from aquacrop.core import *
 from aquacrop.classes import *
-import copy
 import time
 import argparse
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-
-# when sending to cluster, command line argument used to specify the row
-# of input dataframe. this determines which paramaters to use.
-parser = argparse.ArgumentParser()
-parser.add_argument("a", nargs='?', default="42")
-args = parser.parse_args()
-rep = int(args.a)
-#rep=1
 
 # set random seed
-time.sleep(rep/10)
+time.sleep(1)
 np.random.seed(int(time.time()))
 
 
 # allocate params
 COST = 1. # cost of irrigation water $/ha-mm
-MAXIRR=10000 # max irrigation application per season ha-mm
+MAXIRR = 10000 # max irrigation application per season ha-mm
 CYEAR = 2000 # year chosen to ensure constant Co2 concentration every season
 
 
@@ -50,6 +42,7 @@ def create_maize_model(smts,year1,year2,wdf,
     
     return model
 
+# run full seasonal simulation
 def run_model_till_end(model):
     gs_init = int(model.InitCond.GrowthStage)*1
         
@@ -119,7 +112,12 @@ def run_and_return_profit(smts,year,maxirr):
 
     return -prof
 
-# weather list for re-optimization
+
+###### main code #######
+
+
+
+# weather dataframe
 wdf = prepare_weather(get_filepath('champion_climate.txt'))
 wdf.Date.min(),wdf.Date.max()
 sim_start='05/01'
@@ -127,7 +125,6 @@ sim_end = '12/31'
 
 
 
-results=[]
 for year in range(1982,2019):
     rew_func = partial(run_and_return_profit,year=year,maxirr=MAXIRR)
 
@@ -136,5 +133,5 @@ for year in range(1982,2019):
     model=create_maize_model(smt,year,year,wdf,max_irr_season=MAXIRR)
     model = run_model_till_end(model,)
         
-    pd.DataFrame([year,smt,_p]).to_csv('potential_results_y2000.csv',index=None, mode='a', header=False)
-
+    pd.DataFrame([year,smt,_p]).T.to_csv('outputs/potential_results.csv',index=None, mode='a', header=False)
+    
